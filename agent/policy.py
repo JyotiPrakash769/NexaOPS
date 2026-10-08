@@ -14,11 +14,11 @@ from pydantic import ValidationError
 from tools.registry import registry
 from agent.state import TaskState
 
-DEFAULT_APPROVAL_THRESHOLD = 10000.0
+DEFAULT_APPROVAL_THRESHOLD = 50000.0
 
 
 def get_approval_threshold() -> float:
-    """Reads configurable approval threshold from environment or defaults to $10,000."""
+    """Reads configurable approval threshold from environment or defaults to ₹50,000."""
     try:
         return float(os.getenv("INVOICE_APPROVAL_THRESHOLD", str(DEFAULT_APPROVAL_THRESHOLD)))
     except ValueError:
@@ -94,7 +94,7 @@ class PolicyEngine:
                         "ok": False,
                         "data": {"requires_approval": True, "threshold": threshold, "amount": amount},
                         "error_type": "approval_required",
-                        "message": f"Policy rejection: Invoice {invoice_num} total (${amount:,.2f}) meets or exceeds the ${threshold:,.2f} approval threshold. You MUST call 'request_approval' first before creating a record."
+                        "message": f"Policy rejection: Invoice {invoice_num} total (₹{amount:,.2f}) meets or exceeds the ₹{threshold:,.2f} approval threshold. You MUST call 'request_approval' first before creating a record."
                     }
 
         # 4. GUARDRAIL: 'finish' policy

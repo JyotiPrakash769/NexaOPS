@@ -153,7 +153,7 @@ def run_task(
                 "file": inv_data.get("file", "N/A"),
                 "vendor": inv_data.get("vendor_name", "N/A"),
                 "amount": inv_data.get("total_amount", "N/A"),
-                "currency": inv_data.get("currency", "USD"),
+                "currency": inv_data.get("currency", "INR"),
                 "approved_by_supervisor": state.approval_status.get(inv_num, False),
                 "verified": inv_num in state.verified_records,
                 "completed_at": datetime.now(timezone.utc).isoformat(),

@@ -154,12 +154,12 @@ def extract_invoice_data(file: str) -> Dict[str, Any]:
         due_date = due_date_match.group(1).strip() if due_date_match else None
 
         # Currency
-        curr_match = re.search(r"Currency:\s*([A-Za-z]{3})", text)
-        currency = curr_match.group(1).strip() if curr_match else "USD"
+        curr_match = re.search(r"Currency:\s*([A-Za-z₹]{3,4})", text)
+        currency = curr_match.group(1).strip() if curr_match else "INR"
 
         # Total Amount
-        # Look for "Total Amount:\s*(?:[A-Z]{3}\s*)?([\d,]+\.?\d*)"
-        amount_match = re.search(r"Total Amount:\s*(?:[A-Za-z]{3}\s*)?([\d,]+(?:\.\d{2})?)", text)
+        # Look for "Total Amount:\s*(?:(?:INR|USD|Rs\.?|₹)\s*)?([\d,]+(?:\.\d{2})?)"
+        amount_match = re.search(r"Total Amount:\s*(?:(?:INR|USD|Rs\.?|₹)\s*)?([\d,]+(?:\.\d{2})?)", text)
         total_amount = None
         if amount_match:
             try:
@@ -294,7 +294,7 @@ def request_approval(invoice_number: str, amount: float, reason: str) -> Dict[st
         print("\n" + "="*60)
         print(" [HUMAN APPROVAL REQUIRED]")
         print(f" Invoice: {invoice_number}")
-        print(f" Amount:  ${amount:,.2f}")
+        print(f" Amount:  ₹{amount:,.2f}")
         print(f" Reason:  {reason}")
         print("="*60)
         try:
@@ -337,7 +337,7 @@ class CreateFinanceRecordInput(BaseModel):
     vendor_name: str = Field(..., description="Vendor name")
     amount: float = Field(..., description="Total invoice amount")
     due_date: str = Field(..., description="Due date (YYYY-MM-DD)")
-    currency: str = Field(default="USD", description="Currency (e.g. USD)")
+    currency: str = Field(default="INR", description="Currency (e.g. INR)")
     invoice_date: Optional[str] = Field(default=None, description="Invoice issue date (YYYY-MM-DD)")
 
 
@@ -353,7 +353,7 @@ def create_finance_record(
     vendor_name: str,
     amount: float,
     due_date: str,
-    currency: str = "USD",
+    currency: str = "INR",
     invoice_date: Optional[str] = None
 ) -> Dict[str, Any]:
     global _TIMEOUT_SIMULATED_COUNT
@@ -459,7 +459,7 @@ def verify_finance_record(
 
     # Amount check (float precision tolerance 0.01)
     if abs(record["total_amount"] - expected_amount) > 0.01:
-        mismatches.append(f"Amount mismatch: expected ${expected_amount:,.2f}, stored ${record['total_amount']:,.2f}")
+        mismatches.append(f"Amount mismatch: expected ₹{expected_amount:,.2f}, stored ₹{record['total_amount']:,.2f}")
 
     # Due date check
     if expected_due_date.strip() != (record["due_date"] or "").strip():

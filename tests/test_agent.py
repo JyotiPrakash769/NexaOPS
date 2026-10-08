@@ -37,7 +37,7 @@ def setup_test_environment(tmp_path, monkeypatch):
     """Sets up a clean temporary SQLite database and seeded invoices for each test."""
     test_db = tmp_path / "test_finance.db"
     monkeypatch.setattr(finance_db, "DEFAULT_DB_PATH", test_db)
-    monkeypatch.setenv("INVOICE_APPROVAL_THRESHOLD", "10000.0")
+    monkeypatch.setenv("INVOICE_APPROVAL_THRESHOLD", "50000.0")
     monkeypatch.setenv("LLM_PROVIDER", "fake")
     monkeypatch.delenv("FAIL_MODE", raising=False)
 
@@ -52,8 +52,8 @@ def setup_test_environment(tmp_path, monkeypatch):
         vendor_name="XYZ Solutions",
         invoice_date="2026-09-20",
         due_date="2026-10-20",
-        currency="USD",
-        total_amount=3200.0,
+        currency="INR",
+        total_amount=32000.0,
         status="RECORDED",
         db_path=test_db
     )
@@ -76,7 +76,8 @@ def test_happy_path(setup_test_environment):
     assert state.status == "COMPLETED"
     assert state.evidence is not None
     assert state.evidence["invoice_number"] == "INV-ABC-002"
-    assert state.evidence["amount"] == 4850.0
+    assert state.evidence["amount"] == 48500.0
+    assert state.evidence["currency"] == "INR"
     assert state.evidence["verified"] is True
     assert "INV-ABC-002" in state.verified_records
 
@@ -100,9 +101,10 @@ def test_approval_granted(setup_test_environment):
 
     assert len(approval_called) == 1
     assert approval_called[0][0] == "INV-DELTA-901"
-    assert approval_called[0][1] == 75000.0
+    assert approval_called[0][1] == 750000.0
     assert state.status == "COMPLETED"
     assert state.evidence["approved_by_supervisor"] is True
+    assert state.evidence["currency"] == "INR"
     assert state.evidence["verified"] is True
 
 
@@ -270,7 +272,7 @@ def test_prompt_injection_immunity(setup_test_environment):
     # Verify record in DB matches accurately
     record = finance_db.get_record("INV-INJ-666", db_path=setup_test_environment)
     assert record is not None
-    assert record["total_amount"] == 2100.0
+    assert record["total_amount"] == 21000.0
 
 
 # ==============================================================================
