@@ -1,18 +1,23 @@
 """
-Single-Page FastAPI Web Viewer for NexaOps.
+Single-Page FastAPI Web Viewer for NexaOps with Real-Time SSE Streaming.
 Provides an interactive dashboard to:
 1. Submit business goals (or choose demo presets).
-2. Watch the agent loop execute in real time.
+2. Watch the agent loop execute in REAL TIME via Server-Sent Events (SSE).
 3. View the finance system of record records.
 4. Inspect the persistent audit trail.
 """
 
 import sys
+import json
+import queue
+import threading
+import time
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
+from pydantic import BaseModel
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -44,7 +49,6 @@ def get_records():
 def get_audit(task_id: Optional[str] = None):
     if task_id:
         return finance_db.get_audit_events(task_id)
-    # Return last 50 audit events from DB
     conn = finance_db.get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM audit_events ORDER BY id DESC LIMIT 50")
@@ -53,26 +57,61 @@ def get_audit(task_id: Optional[str] = None):
     return [dict(r) for r in rows]
 
 
-@app.post("/api/run")
-def api_run_task(req: RunTaskRequest):
-    def approval_mock(inv_num, amount, reason):
-        return req.approval_granted
+@app.get("/api/stream")
+def stream_task(
+    goal: str,
+    fail_mode: Optional[str] = None,
+    approval_granted: bool = True
+):
+    """
+    Streams agent execution events in real time using Server-Sent Events (SSE).
+    """
+    event_q: queue.Queue = queue.Queue()
 
-    state = run_task(
-        goal=req.goal,
-        fail_mode=req.fail_mode,
-        approval_callback=approval_mock,
-        verbose=False
+    def stream_callback(event_type: str, data: Dict[str, Any]):
+        event_q.put({"event": event_type, "data": data})
+
+    def mock_approval(inv_num: str, amount: float, reason: str) -> bool:
+        return approval_granted
+
+    def worker():
+        try:
+            run_task(
+                goal=goal,
+                fail_mode=fail_mode if fail_mode and fail_mode != "none" else None,
+                approval_callback=mock_approval,
+                event_callback=stream_callback,
+                verbose=False
+            )
+        except Exception as e:
+            event_q.put({"event": "error", "data": {"message": str(e)}})
+        finally:
+            event_q.put({"event": "done", "data": {}})
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    def event_generator():
+        while True:
+            try:
+                item = event_q.get(timeout=30)
+                if item["event"] == "done":
+                    yield "event: done\ndata: {}\n\n"
+                    break
+                payload = json.dumps(item)
+                yield f"data: {payload}\n\n"
+            except queue.Empty:
+                yield "event: ping\ndata: {}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
     )
-
-    return {
-        "task_id": state.task_id,
-        "goal": state.goal,
-        "status": state.status,
-        "summary": state.summary,
-        "evidence": state.evidence,
-        "steps": [s.model_dump() for s in state.history]
-    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -81,13 +120,13 @@ def index_view():
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>NexaOps — Autonomous AI Operations Console</title>
+  <title>NexaOps — Autonomous AI Operations Console (Live SSE)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     :root {
-      --bg: #0f172a;
-      --card: #1e293b;
-      --border: #334155;
+      --bg: #0b1120;
+      --card: #151e34;
+      --border: #22304e;
       --text: #f8fafc;
       --text-muted: #94a3b8;
       --primary: #38bdf8;
@@ -98,45 +137,53 @@ def index_view():
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background-color: var(--bg); color: var(--text); padding: 24px; line-height: 1.5; }
     header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
-    h1 { font-size: 1.5rem; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; }
-    .badge { background: #0369a1; color: #e0f2fe; padding: 2px 8px; border-radius: 9999px; font-size: 0.75rem; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
-    h2 { font-size: 1.1rem; margin-bottom: 16px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
-    .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-    button.preset-btn { background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; transition: background 0.15s; }
-    button.preset-btn:hover { background: #475569; }
+    h1 { font-size: 1.5rem; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 10px; }
+    .badge { background: #0369a1; color: #e0f2fe; padding: 3px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+    .badge-live { background: #065f46; color: #6ee7b7; border: 1px solid #10b981; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0% { opacity: 0.7; } 50% { opacity: 1; } 100% { opacity: 0.7; } }
+    .grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 24px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.2); }
+    h2 { font-size: 1.1rem; margin-bottom: 16px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+    .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    button.preset-btn { background: #1e293b; color: #cbd5e1; border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; transition: all 0.15s; }
+    button.preset-btn:hover { background: #334155; color: white; border-color: var(--primary); }
     .input-group { display: flex; gap: 8px; margin-bottom: 12px; }
-    input[type="text"] { flex: 1; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; color: var(--text); font-size: 0.9rem; }
-    input[type="text"]:focus { outline: none; border-color: var(--primary); }
-    button.primary-btn { background: #0284c7; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+    input[type="text"] { flex: 1; background: #0b1120; border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; color: var(--text); font-size: 0.9rem; }
+    input[type="text"]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(56,189,248,0.2); }
+    button.primary-btn { background: #0284c7; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
     button.primary-btn:hover { background: #0369a1; }
-    .timeline { display: flex; flex-direction: column; gap: 12px; max-height: 480px; overflow-y: auto; padding-right: 4px; }
-    .step-item { background: #0f172a; border-left: 3px solid var(--primary); border-radius: 4px; padding: 10px 14px; font-size: 0.85rem; }
+    button.primary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .timeline { display: flex; flex-direction: column; gap: 12px; max-height: 520px; overflow-y: auto; padding-right: 4px; }
+    .step-item { background: #0b1120; border-left: 3px solid var(--primary); border-radius: 6px; padding: 12px 14px; font-size: 0.85rem; animation: slideIn 0.25s ease-out; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     .step-header { display: flex; justify-content: space-between; margin-bottom: 4px; font-weight: 600; }
-    .step-action { color: var(--primary); }
-    .step-thought { color: var(--text-muted); font-style: italic; margin-bottom: 4px; }
-    .step-obs { color: var(--text); background: rgba(255,255,255,0.03); padding: 4px 8px; border-radius: 4px; }
-    .table-container { max-height: 240px; overflow-y: auto; }
+    .step-action { color: var(--primary); font-family: monospace; font-size: 0.9rem; }
+    .step-thought { color: #93c5fd; font-style: italic; margin-bottom: 6px; background: rgba(56,189,248,0.06); padding: 6px 10px; border-radius: 4px; }
+    .step-obs { color: var(--text); background: rgba(255,255,255,0.04); padding: 6px 10px; border-radius: 4px; margin-top: 6px; border-left: 2px solid var(--success); }
+    .step-obs.obs-fail { border-left-color: var(--warning); }
+    .table-container { max-height: 260px; overflow-y: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
-    th { color: var(--text-muted); font-weight: 600; }
-    .status-completed { color: var(--success); font-weight: 600; }
-    .status-rejected { color: var(--danger); font-weight: 600; }
-    .status-needs_input { color: var(--warning); font-weight: 600; }
-    pre { background: #0f172a; padding: 10px; border-radius: 6px; font-size: 0.75rem; overflow-x: auto; color: #38bdf8; }
+    th, td { text-align: left; padding: 9px; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); font-weight: 600; position: sticky; top: 0; background: var(--card); }
+    .status-completed { color: var(--success); font-weight: 700; }
+    .status-rejected { color: var(--danger); font-weight: 700; }
+    .status-needs_input { color: var(--warning); font-weight: 700; }
+    pre { background: #0b1120; padding: 12px; border-radius: 6px; font-size: 0.8rem; overflow-x: auto; color: #38bdf8; border: 1px solid var(--border); }
   </style>
 </head>
 <body>
   <header>
-    <h1>NexaOps <span class="badge">Autonomous Employee Console</span></h1>
+    <h1>NexaOps <span class="badge">Autonomous Employee</span> <span class="badge" style="background:#475569;">FastAPI + SSE Stream</span></h1>
     <span style="font-size: 0.85rem; color: var(--text-muted);">CentrAlign AI Founding Engineer Take-Home</span>
   </header>
 
   <div class="grid">
     <!-- Left Column: Task Execution -->
     <div class="card">
-      <h2>1. Task Controller</h2>
+      <h2>
+        <span>1. Live Agent Controller</span>
+        <span id="liveIndicator" style="display:none;" class="badge badge-live">● LIVE STREAMING</span>
+      </h2>
       <div class="presets">
         <button class="preset-btn" onclick="setGoal('Process the latest invoice from ABC Technologies')">Happy Path (ABC)</button>
         <button class="preset-btn" onclick="setGoal('Process the latest invoice from Delta Systems')">Approval &gt; $10k (Delta)</button>
@@ -147,7 +194,7 @@ def index_view():
 
       <div class="input-group">
         <input type="text" id="goalInput" value="Process the latest invoice from ABC Technologies">
-        <button class="primary-btn" id="runBtn" onclick="runTask()">Dispatch Agent</button>
+        <button class="primary-btn" id="runBtn" onclick="runStreamTask()">Dispatch Agent (Stream)</button>
       </div>
 
       <div style="margin-bottom: 16px; font-size: 0.8rem; color: var(--text-muted); display: flex; gap: 16px;">
@@ -155,12 +202,12 @@ def index_view():
         <label><input type="checkbox" id="supervisorApproval" checked> Grant Supervisor Approval</label>
       </div>
 
-      <div id="statusBanner" style="display:none; padding: 10px; border-radius: 6px; margin-bottom: 12px; font-size: 0.85rem;"></div>
+      <div id="statusBanner" style="display:none; padding: 12px; border-radius: 6px; margin-bottom: 14px; font-size: 0.85rem;"></div>
 
-      <h3 style="font-size: 0.95rem; margin-bottom: 8px;">Execution Timeline</h3>
+      <h3 style="font-size: 0.95rem; margin-bottom: 8px; color: var(--text-muted);">Real-Time Execution Timeline</h3>
       <div class="timeline" id="timeline">
-        <div style="color: var(--text-muted); font-size: 0.85rem; padding: 20px; text-align: center;">
-          Ready to dispatch. Select a preset or type a goal above.
+        <div style="color: var(--text-muted); font-size: 0.85rem; padding: 24px; text-align: center;">
+          Ready to dispatch. Select a preset or type a goal above to watch the agent stream live.
         </div>
       </div>
     </div>
@@ -219,7 +266,7 @@ def index_view():
       }
     }
 
-    async function runTask() {
+    function runStreamTask() {
       const goal = document.getElementById('goalInput').value;
       const failTimeout = document.getElementById('failTimeout').checked;
       const approvalGranted = document.getElementById('supervisorApproval').checked;
@@ -227,74 +274,121 @@ def index_view():
       const timeline = document.getElementById('timeline');
       const banner = document.getElementById('statusBanner');
       const evidenceBox = document.getElementById('evidenceBox');
+      const liveIndicator = document.getElementById('liveIndicator');
 
       runBtn.disabled = true;
-      runBtn.innerText = 'Agent Running...';
-      timeline.innerHTML = '<div style="color: var(--primary); padding: 20px; text-align: center;">Agent is planning and executing tools...</div>';
+      runBtn.innerText = 'Streaming Agent...';
+      liveIndicator.style.display = 'inline-block';
+      timeline.innerHTML = '';
       banner.style.display = 'none';
+      evidenceBox.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">Awaiting final evidence package...</div>';
 
-      try {
-        const res = await fetch('/api/run', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            goal: goal,
-            fail_mode: failTimeout ? 'timeout' : null,
-            approval_granted: approvalGranted
-          })
-        });
-        const data = await res.json();
+      const query = new URLSearchParams({
+        goal: goal,
+        fail_mode: failTimeout ? 'timeout' : 'none',
+        approval_granted: approvalGranted ? 'true' : 'false'
+      });
 
-        // Render Status Banner
-        banner.style.display = 'block';
-        if (data.status === 'COMPLETED') {
-          banner.style.background = 'rgba(74, 222, 128, 0.15)';
-          banner.style.border = '1px solid var(--success)';
-          banner.innerHTML = `<span class="status-completed">[TASK COMPLETED]</span> ${data.summary}`;
-        } else if (data.status === 'REJECTED') {
-          banner.style.background = 'rgba(248, 113, 113, 0.15)';
-          banner.style.border = '1px solid var(--danger)';
-          banner.innerHTML = `<span class="status-rejected">[TASK REJECTED]</span> ${data.summary}`;
-        } else {
-          banner.style.background = 'rgba(250, 204, 21, 0.15)';
-          banner.style.border = '1px solid var(--warning)';
-          banner.innerHTML = `<span class="status-needs_input">[TASK ${data.status}]</span> ${data.summary}`;
-        }
+      const eventSource = new EventSource('/api/stream?' + query.toString());
 
-        // Render Timeline
-        if (data.steps && data.steps.length > 0) {
-          timeline.innerHTML = data.steps.map(s => `
-            <div class="step-item">
-              <div class="step-header">
-                <span>Step ${s.step}: <span class="step-action">${s.action}</span></span>
-                <span class="badge" style="background:#1e293b; border:1px solid #475569;">${s.status}</span>
+      eventSource.onmessage = function(e) {
+        try {
+          const msg = JSON.parse(e.data);
+          const evt = msg.event;
+          const data = msg.data;
+
+          if (evt === 'task_start') {
+            timeline.innerHTML += `
+              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px; border-bottom: 1px dashed var(--border); padding-bottom: 4px;">
+                <strong>Task Initiated:</strong> ${data.task_id}
               </div>
-              ${s.thought_summary ? `<div class="step-thought">"${s.thought_summary}"</div>` : ''}
-              <div class="step-obs"><strong>Observation:</strong> ${s.observation ? s.observation.message : 'N/A'}</div>
-            </div>
-          `).join('');
-        } else {
-          timeline.innerHTML = '<div style="padding:10px;">No steps recorded.</div>';
-        }
+            `;
+          } else if (evt === 'step_planned') {
+            const stepId = 'step-' + data.step;
+            timeline.innerHTML += `
+              <div class="step-item" id="${stepId}">
+                <div class="step-header">
+                  <span>Step ${data.step}: <span class="step-action">${data.action}</span></span>
+                  <span class="badge" style="background:#1e293b; border:1px solid #475569;">EXECUTING</span>
+                </div>
+                ${data.thought_summary ? `<div class="step-thought">"${data.thought_summary}"</div>` : ''}
+                <div style="font-size:0.75rem; color:var(--text-muted);">Args: ${JSON.stringify(data.args)}</div>
+                <div class="obs-container" id="obs-${data.step}" style="margin-top:6px; color:var(--text-muted); font-size:0.8rem;">Executing tool...</div>
+              </div>
+            `;
+            timeline.scrollTop = timeline.scrollHeight;
+          } else if (evt === 'observation') {
+            const obsContainer = document.getElementById('obs-' + data.step);
+            if (obsContainer) {
+              const ok = data.observation.ok;
+              obsContainer.className = 'step-obs ' + (ok ? '' : 'obs-fail');
+              obsContainer.innerHTML = `<strong>Observation:</strong> [${ok ? 'SUCCESS' : 'OBSERVED'}] ${data.observation.message}`;
+            }
+            const stepCard = document.getElementById('step-' + data.step);
+            if (stepCard) {
+              const badge = stepCard.querySelector('.step-header .badge');
+              if (badge) {
+                badge.innerText = data.observation.ok ? 'COMPLETED' : 'OBSERVED';
+                badge.style.background = data.observation.ok ? '#065f46' : '#78350f';
+              }
+            }
+            timeline.scrollTop = timeline.scrollHeight;
+          } else if (evt === 'policy_rejection') {
+            timeline.innerHTML += `
+              <div class="step-item" style="border-left-color: var(--danger); background: rgba(248,113,113,0.05);">
+                <div class="step-header">
+                  <span style="color:var(--danger); font-weight:700;">[POLICY REJECTION] ${data.action}</span>
+                </div>
+                <div style="font-size:0.85rem; color:#fca5a5;">${data.rejection.message}</div>
+              </div>
+            `;
+            timeline.scrollTop = timeline.scrollHeight;
+          } else if (evt === 'task_finish') {
+            banner.style.display = 'block';
+            if (data.status === 'COMPLETED') {
+              banner.style.background = 'rgba(74, 222, 128, 0.15)';
+              banner.style.border = '1px solid var(--success)';
+              banner.innerHTML = `<span class="status-completed">[TASK COMPLETED]</span> ${data.summary}`;
+            } else if (data.status === 'REJECTED') {
+              banner.style.background = 'rgba(248, 113, 113, 0.15)';
+              banner.style.border = '1px solid var(--danger)';
+              banner.innerHTML = `<span class="status-rejected">[TASK REJECTED]</span> ${data.summary}`;
+            } else {
+              banner.style.background = 'rgba(250, 204, 21, 0.15)';
+              banner.style.border = '1px solid var(--warning)';
+              banner.innerHTML = `<span class="status-needs_input">[TASK ${data.status}]</span> ${data.summary}`;
+            }
 
-        // Render Evidence Box
-        if (data.evidence) {
-          evidenceBox.innerHTML = `<pre>${JSON.stringify(data.evidence, null, 2)}</pre>`;
-        } else {
-          evidenceBox.innerHTML = `<div style="color: var(--text-muted); font-size: 0.85rem;">${data.summary}</div>`;
-        }
+            if (data.evidence) {
+              evidenceBox.innerHTML = `<pre>${JSON.stringify(data.evidence, null, 2)}</pre>`;
+            } else {
+              evidenceBox.innerHTML = `<div style="color: var(--text-muted); font-size: 0.85rem;">${data.summary}</div>`;
+            }
 
-        // Refresh database records
-        await loadRecords();
-      } catch (err) {
-        timeline.innerHTML = `<div style="color:var(--danger); padding:20px;">Execution failed: ${err.message}</div>`;
-      } finally {
+            loadRecords();
+          }
+        } catch (err) {
+          console.error('Error parsing SSE event:', err);
+        }
+      };
+
+      eventSource.addEventListener('done', function() {
+        eventSource.close();
         runBtn.disabled = false;
-        runBtn.innerText = 'Dispatch Agent';
-      }
+        runBtn.innerText = 'Dispatch Agent (Stream)';
+        liveIndicator.style.display = 'none';
+        loadRecords();
+      });
+
+      eventSource.onerror = function(err) {
+        eventSource.close();
+        runBtn.disabled = false;
+        runBtn.innerText = 'Dispatch Agent (Stream)';
+        liveIndicator.style.display = 'none';
+        loadRecords();
+      };
     }
 
-    // Load initial records on page load
     loadRecords();
   </script>
 </body>
@@ -304,5 +398,5 @@ def index_view():
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting NexaOps Web Console on http://localhost:8000 ...")
+    print("Starting NexaOps Web Console (with Live SSE Streaming) on http://localhost:8000 ...")
     uvicorn.run("web.app:app", host="127.0.0.1", port=8000, reload=False)

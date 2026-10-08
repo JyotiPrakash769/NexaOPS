@@ -33,6 +33,7 @@ def run_task(
     interactive_approval: bool = True,
     approval_callback: Optional[Callable[[str, float, str], bool]] = None,
     llm_adapter_override: Optional[Any] = None,
+    event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     verbose: bool = True
 ) -> TaskState:
     """
@@ -49,6 +50,9 @@ def run_task(
     state = TaskState(goal=goal, max_steps=max_steps, status="PLANNING")
     logger = EventLogger(task_id=state.task_id, verbose=verbose)
     logger.log_task_start(goal)
+
+    if event_callback:
+        event_callback("task_start", {"task_id": state.task_id, "goal": goal})
 
     llm = llm_adapter_override or get_llm_adapter()
     tool_catalog = registry.get_catalog_for_prompt()
@@ -107,6 +111,14 @@ def run_task(
 
         logger.log_step(step_number, thought_summary, action, args)
 
+        if event_callback:
+            event_callback("step_planned", {
+                "step": step_number,
+                "thought_summary": thought_summary,
+                "action": action,
+                "args": args
+            })
+
         # 3. Policy Engine Validation
         is_valid, policy_rejection = PolicyEngine.validate_action(state, action, args)
         if not is_valid:
@@ -118,6 +130,12 @@ def run_task(
                 observation=policy_rejection,
                 status="REJECTED_BY_POLICY"
             )
+            if event_callback:
+                event_callback("policy_rejection", {
+                    "step": step_number,
+                    "action": action,
+                    "rejection": policy_rejection
+                })
             # Rejection is fed back as an observation so the agent adapts on next loop
             continue
 
@@ -143,6 +161,13 @@ def run_task(
             }
 
             logger.log_task_finish(state.status, summary, state.evidence)
+            if event_callback:
+                event_callback("task_finish", {
+                    "task_id": state.task_id,
+                    "status": state.status,
+                    "summary": summary,
+                    "evidence": state.evidence
+                })
             return state
 
         if action == "ask_user":
@@ -157,6 +182,13 @@ def run_task(
                 status="NEEDS_INPUT"
             )
             logger.log_task_finish(state.status, state.summary)
+            if event_callback:
+                event_callback("task_finish", {
+                    "task_id": state.task_id,
+                    "status": state.status,
+                    "summary": state.summary,
+                    "evidence": None
+                })
             return state
 
         # 5. Execute Registered Tool
@@ -180,6 +212,12 @@ def run_task(
                 observation = tool_def.func(**args)
 
         logger.log_observation(step_number, action, observation)
+        if event_callback:
+            event_callback("observation", {
+                "step": step_number,
+                "action": action,
+                "observation": observation
+            })
 
         # 6. Update State Invariants based on Tool Results
         if action == "extract_invoice_data" and observation.get("ok"):
@@ -195,6 +233,13 @@ def run_task(
                 state.summary = f"Task aborted: Human supervisor rejected approval for invoice {inv_num}."
                 state.add_step(thought_summary, action, args, observation, status="REJECTED")
                 logger.log_task_finish(state.status, state.summary)
+                if event_callback:
+                    event_callback("task_finish", {
+                        "task_id": state.task_id,
+                        "status": state.status,
+                        "summary": state.summary,
+                        "evidence": None
+                    })
                 return state
 
         elif action == "verify_finance_record":
@@ -209,6 +254,13 @@ def run_task(
                     state.summary = f"Verification Mismatch: {observation.get('message')}"
                     state.add_step(thought_summary, action, args, observation, status="VERIFICATION_FAILED")
                     logger.log_task_finish(state.status, state.summary)
+                    if event_callback:
+                        event_callback("task_finish", {
+                            "task_id": state.task_id,
+                            "status": state.status,
+                            "summary": state.summary,
+                            "evidence": None
+                        })
                     return state
 
         # Add step record
@@ -218,4 +270,11 @@ def run_task(
     state.status = "FAILED"
     state.summary = f"Task exceeded maximum step limit ({state.max_steps}) without completion."
     logger.log_task_finish(state.status, state.summary)
+    if event_callback:
+        event_callback("task_finish", {
+            "task_id": state.task_id,
+            "status": state.status,
+            "summary": state.summary,
+            "evidence": None
+        })
     return state
