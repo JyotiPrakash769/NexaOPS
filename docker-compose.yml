@@ -1,0 +1,14 @@
+services:
+  nexaops:
+    build: .
+    container_name: nexaops-app
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - LLM_PROVIDER=fake
+      - INVOICE_APPROVAL_THRESHOLD=10000.0
+      - MAX_AGENT_STEPS=15
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
