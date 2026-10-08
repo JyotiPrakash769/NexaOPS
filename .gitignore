@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
+.env
+
+# Pytest & caches
+.pytest_cache/
+
+# SQLite databases
+*.db
+*.sqlite3
+
+# OS generated
+Thumbs.db
+Desktop.ini
+.DS_Store
