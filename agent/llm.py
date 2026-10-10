@@ -164,15 +164,20 @@ class FakeLLMAdapter:
                 "args": {"summary": f"Existing record for {inv_num} was found and verified. No duplicate created."}
             }
 
-        # Step D2: Not a duplicate. Check approval threshold (₹50,000)
-        if total_amount >= 50000.0 and not approval_status.get(inv_num, False):
+        # Step D2: Not a duplicate. Check approval threshold dynamically
+        from agent.policy import get_approval_threshold
+        threshold = get_approval_threshold()
+        needs_approval = (total_amount >= threshold) or any(
+            "approval" in (h.get("result") or "").lower() for h in recent
+        )
+        if needs_approval and not approval_status.get(inv_num, False):
             return {
-                "thought_summary": f"Invoice amount ₹{total_amount:,.2f} exceeds ₹50,000 threshold. Requesting supervisor approval.",
+                "thought_summary": f"Invoice amount ₹{total_amount:,.2f} meets or exceeds ₹{threshold:,.2f} threshold. Requesting supervisor approval.",
                 "action": "request_approval",
                 "args": {
                     "invoice_number": inv_num,
                     "amount": total_amount,
-                    "reason": f"Amount exceeds ₹50,000 threshold (Total: ₹{total_amount:,.2f})"
+                    "reason": f"Amount meets or exceeds ₹{threshold:,.2f} threshold (Total: ₹{total_amount:,.2f})"
                 }
             }
 

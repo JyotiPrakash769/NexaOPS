@@ -23,6 +23,28 @@ INVOICES_DIR = PROJECT_ROOT / "data" / "invoices"
 
 # In-memory transient failure tracker for demo timeout retry testing
 _TIMEOUT_SIMULATED_COUNT = 0
+_CURRENT_FAIL_MODE: Optional[str] = None
+
+
+def set_fail_mode(mode: Optional[str]) -> None:
+    """Sets an in-process fail mode override for the active task."""
+    global _CURRENT_FAIL_MODE
+    _CURRENT_FAIL_MODE = mode
+
+
+def get_fail_mode() -> str:
+    """Gets the active failure simulation mode."""
+    global _CURRENT_FAIL_MODE
+    if _CURRENT_FAIL_MODE:
+        return _CURRENT_FAIL_MODE.strip().lower()
+    return os.getenv("FAIL_MODE", "").strip().lower()
+
+
+def reset_simulation_state() -> None:
+    """Resets all simulation counters for clean task runs."""
+    global _TIMEOUT_SIMULATED_COUNT, _CURRENT_FAIL_MODE
+    _TIMEOUT_SIMULATED_COUNT = 0
+    _CURRENT_FAIL_MODE = None
 
 
 # ==============================================================================
@@ -125,6 +147,11 @@ class ExtractInvoiceDataInput(BaseModel):
 )
 def extract_invoice_data(file: str) -> Dict[str, Any]:
     file_path = INVOICES_DIR / Path(file).name
+    if not file_path.exists() and not file_path.suffix:
+        alt_path = file_path.with_suffix(".pdf")
+        if alt_path.exists():
+            file_path = alt_path
+
     if not file_path.exists():
         return {
             "ok": False,
@@ -184,7 +211,7 @@ def extract_invoice_data(file: str) -> Dict[str, Any]:
             missing_fields.append("invoice_number")
         if not vendor_name:
             missing_fields.append("vendor_name")
-        if not total_amount:
+        if total_amount is None:
             missing_fields.append("total_amount")
         if not due_date:
             missing_fields.append("due_date")
@@ -359,7 +386,7 @@ def create_finance_record(
     global _TIMEOUT_SIMULATED_COUNT
 
     # Failure Mode Simulation: Timeout
-    fail_mode = os.getenv("FAIL_MODE", "").lower()
+    fail_mode = get_fail_mode()
     demo_timeout = os.getenv("DEMO_FINANCE_TIMEOUT", "false").lower() == "true"
     if fail_mode == "timeout" or demo_timeout:
         if _TIMEOUT_SIMULATED_COUNT == 0:
@@ -453,13 +480,15 @@ def verify_finance_record(
 
     mismatches = []
 
-    # Vendor check (case-insensitive substring or match)
-    if expected_vendor.strip().lower() not in record["vendor_name"].strip().lower():
+    # Vendor check (case-insensitive bidirectional match)
+    exp_v = expected_vendor.strip().lower()
+    stored_v = record["vendor_name"].strip().lower()
+    if exp_v not in stored_v and stored_v not in exp_v:
         mismatches.append(f"Vendor mismatch: expected '{expected_vendor}', stored '{record['vendor_name']}'")
 
     # Amount check (float precision tolerance 0.01)
-    if abs(record["total_amount"] - expected_amount) > 0.01:
-        mismatches.append(f"Amount mismatch: expected ₹{expected_amount:,.2f}, stored ₹{record['total_amount']:,.2f}")
+    if abs(float(record["total_amount"]) - float(expected_amount)) > 0.01:
+        mismatches.append(f"Amount mismatch: expected ₹{expected_amount:,.2f}, stored ₹{float(record['total_amount']):,.2f}")
 
     # Due date check
     if expected_due_date.strip() != (record["due_date"] or "").strip():

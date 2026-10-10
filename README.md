@@ -2,6 +2,8 @@
 
 > **Take-Home Project for CentrAlign AI (Founding Engineer Assignment)**  
 > An autonomous AI Operations worker that receives business objectives in natural language, selects real tools, executes actions against a controlled company environment, observes results, adapts to failures, requests human approval when required, independently verifies outcomes, and returns verifiable evidence.
+>
+> 📖 **[Comprehensive Master Project & Demonstration Guide](file:///C:/Users/jyoti/.gemini/antigravity-ide/scratch/nexaops/MASTER_PROJECT_GUIDE.md)**: Full breakdown of objectives, company rules alignment, usage, live interview demo pitch, and Q&A answers.
 
 ---
 

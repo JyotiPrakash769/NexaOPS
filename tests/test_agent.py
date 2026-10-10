@@ -287,3 +287,63 @@ def test_generalization_list_invoices(setup_test_environment):
 
     assert state.status == "COMPLETED"
     assert "listed all recorded invoices" in state.summary.lower()
+    assert state.evidence is not None
+    assert state.evidence.get("workflow") == "list_invoices"
+
+
+# ==============================================================================
+# TEST 13: Audit Trail Persists Real Arguments and Finish Step
+# ==============================================================================
+def test_audit_trail_persists_args_and_finish(setup_test_environment):
+    """Verifies that SQLite audit log stores actual input arguments and completion."""
+    state = run_task(
+        goal="Process the latest invoice from ABC Technologies",
+        verbose=False
+    )
+
+    events = finance_db.get_audit_events(state.task_id, db_path=setup_test_environment)
+    assert len(events) >= 5
+
+    # Check that find_latest_invoice saved real args (not empty dict)
+    find_event = next(e for e in events if e["tool"] == "find_latest_invoice")
+    assert find_event["args"] == {"vendor": "ABC Technologies"}
+
+    # Check that finish_task was persisted with summary
+    finish_event = next((e for e in events if e["tool"] == "finish_task"), None)
+    assert finish_event is not None
+    assert finish_event["status"] == "COMPLETED"
+
+
+# ==============================================================================
+# TEST 14: Dynamic Lower Approval Threshold Adaptation
+# ==============================================================================
+def test_dynamic_lower_approval_threshold(setup_test_environment, monkeypatch):
+    """When threshold is lowered to ₹20,000, ABC invoice (₹48,500) triggers approval request."""
+    monkeypatch.setenv("INVOICE_APPROVAL_THRESHOLD", "20000.0")
+    approval_called = []
+
+    def mock_supervisor_grant(inv_num, amount, reason):
+        approval_called.append((inv_num, amount))
+        return True
+
+    state = run_task(
+        goal="Process the latest invoice from ABC Technologies",
+        approval_callback=mock_supervisor_grant,
+        verbose=False
+    )
+
+    assert len(approval_called) == 1
+    assert approval_called[0][0] == "INV-ABC-002"
+    assert state.status == "COMPLETED"
+    assert state.evidence["approved_by_supervisor"] is True
+
+
+# ==============================================================================
+# TEST 15: Extract Invoice Data with Fallback for Missing Extension
+# ==============================================================================
+def test_extract_invoice_without_pdf_extension(setup_test_environment):
+    """Tool resolves filename even when passed without the .pdf extension."""
+    res = invoice_tools.extract_invoice_data("INV-ABC-002")
+    assert res["ok"] is True
+    assert res["data"]["invoice_number"] == "INV-ABC-002"
+    assert res["data"]["total_amount"] == 48500.0
