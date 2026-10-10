@@ -54,6 +54,16 @@ class ConfigUpdateRequest(BaseModel):
     model: Optional[str] = None
 
 
+class GenerateInvoiceRequest(BaseModel):
+    vendor_name: str
+    invoice_number: str
+    total_amount: float
+    invoice_date: Optional[str] = "2026-10-10"
+    due_date: Optional[str] = "2026-11-10"
+    currency: Optional[str] = "INR"
+    notes: Optional[str] = ""
+
+
 # ------------------------------------------------------------------------------
 # Core Endpoints
 # ------------------------------------------------------------------------------
@@ -141,6 +151,29 @@ def list_invoices():
             "url": f"/api/invoices/{p.name}"
         })
     return items
+
+
+@app.post("/api/invoices/generate")
+def generate_custom_invoice(req: GenerateInvoiceRequest):
+    from env.seed import create_invoice_pdf
+    filename = f"{req.invoice_number.strip().upper()}.pdf"
+    path = create_invoice_pdf(
+        filename=filename,
+        invoice_number=req.invoice_number.strip().upper(),
+        vendor_name=req.vendor_name.strip(),
+        invoice_date=req.invoice_date or "2026-10-10",
+        due_date=req.due_date,
+        currency=req.currency or "INR",
+        total_amount=req.total_amount,
+        notes=req.notes or ""
+    )
+    return {
+        "status": "ok",
+        "filename": filename,
+        "vendor": req.vendor_name.strip(),
+        "amount": req.total_amount,
+        "message": f"Successfully created {filename} for {req.vendor_name.strip()}."
+    }
 
 
 @app.get("/api/invoices/{filename}")
@@ -757,7 +790,10 @@ def index_view():
     <div id="tab-vault" class="panel" style="display:none;">
       <div class="panel-header">
         <div class="panel-title">Sample Invoice PDF Vault</div>
-        <button class="btn-secondary" onclick="loadPdfVault()">🔄 Refresh</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-primary" onclick="openCreateInvoiceModal()">➕ Create Custom Invoice</button>
+          <button class="btn-secondary" onclick="loadPdfVault()">🔄 Refresh</button>
+        </div>
       </div>
       <table id="vaultTable">
         <thead>
@@ -795,6 +831,50 @@ def index_view():
       </div>
       <div class="modal-body">
         <iframe id="pdfFrame" src=""></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Custom Invoice Modal -->
+  <div class="modal-overlay" id="createInvoiceModal">
+    <div class="modal-box" style="max-width:550px; height:auto; padding:24px;">
+      <div class="modal-header" style="padding:0 0 16px 0;">
+        <span style="font-weight:800; font-size:1.1rem; color:var(--text);">➕ Create Custom Invoice PDF</span>
+        <button class="btn-secondary" style="padding:4px 10px;" onclick="closeCreateInvoiceModal()">✕</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
+        <div>
+          <label style="font-size:0.75rem; color:var(--text-dim); text-transform:uppercase;">Vendor Name</label>
+          <input type="text" id="custVendor" value="Jyoti Enterprises" placeholder="e.g. Jyoti Enterprises">
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div>
+            <label style="font-size:0.75rem; color:var(--text-dim); text-transform:uppercase;">Invoice Number</label>
+            <input type="text" id="custInvNum" value="INV-JYOTI-001" placeholder="e.g. INV-JYOTI-001">
+          </div>
+          <div>
+            <label style="font-size:0.75rem; color:var(--text-dim); text-transform:uppercase;">Amount (₹ INR)</label>
+            <input type="text" id="custAmount" value="65000" placeholder="e.g. 65000">
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div>
+            <label style="font-size:0.75rem; color:var(--text-dim); text-transform:uppercase;">Invoice Date</label>
+            <input type="text" id="custInvDate" value="2026-10-10" placeholder="YYYY-MM-DD">
+          </div>
+          <div>
+            <label style="font-size:0.75rem; color:var(--text-dim); text-transform:uppercase;">Due Date</label>
+            <input type="text" id="custDueDate" value="2026-11-20" placeholder="YYYY-MM-DD">
+          </div>
+        </div>
+        <div>
+          <label style="font-size:0.75rem; color:var(--text-dim); text-transform:uppercase;">Notes (Optional)</label>
+          <input type="text" id="custNotes" value="Consulting & Cloud Operations" placeholder="Additional notes...">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:8px;">
+          <button class="btn-secondary" onclick="closeCreateInvoiceModal()">Cancel</button>
+          <button class="btn-primary" onclick="submitCreateInvoice()">Generate Invoice PDF</button>
+        </div>
       </div>
     </div>
   </div>
@@ -951,6 +1031,52 @@ def index_view():
     function closePdfModal() {
       document.getElementById('pdfModal').style.display = 'none';
       document.getElementById('pdfFrame').src = '';
+    }
+
+    function openCreateInvoiceModal() {
+      document.getElementById('createInvoiceModal').style.display = 'flex';
+    }
+
+    function closeCreateInvoiceModal() {
+      document.getElementById('createInvoiceModal').style.display = 'none';
+    }
+
+    async function submitCreateInvoice() {
+      const vendor = document.getElementById('custVendor').value.trim();
+      const num = document.getElementById('custInvNum').value.trim();
+      const amount = parseFloat(document.getElementById('custAmount').value.trim());
+      const invDate = document.getElementById('custInvDate').value.trim();
+      const dueDate = document.getElementById('custDueDate').value.trim();
+      const notes = document.getElementById('custNotes').value.trim();
+
+      if (!vendor || !num || isNaN(amount)) {
+        alert('Please fill in Vendor, Invoice Number, and Amount.');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/invoices/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vendor_name: vendor,
+            invoice_number: num,
+            total_amount: amount,
+            invoice_date: invDate,
+            due_date: dueDate,
+            notes: notes
+          })
+        });
+        const d = await res.json();
+        closeCreateInvoiceModal();
+        loadPdfVault();
+        if (confirm(`Created ${d.filename} for ${d.vendor} (₹${amount.toLocaleString('en-IN')})! Do you want to dispatch the agent to process this invoice right now?`)) {
+          setGoal(`Process the latest invoice from ${vendor}`);
+          switchTab('console');
+        }
+      } catch (err) {
+        alert('Failed to create invoice: ' + err);
+      }
     }
 
     async function runSecurityChecks() {

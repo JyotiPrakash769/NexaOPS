@@ -100,8 +100,22 @@ class FakeLLMAdapter:
                         found_file_in_recent = m.group(1)
 
             if not found_file_in_recent:
-                # Infer vendor from goal
-                vendor = "Delta Systems" if "delta" in goal else "XYZ Solutions" if "xyz" in goal else "Acme Corp" if "acme" in goal else "InnoTech" if "innotech" in goal else "ABC Technologies"
+                # Infer vendor from goal (known presets or arbitrary custom vendor)
+                goal_lower = goal.lower()
+                if "delta" in goal_lower:
+                    vendor = "Delta Systems"
+                elif "xyz" in goal_lower:
+                    vendor = "XYZ Solutions"
+                elif "acme" in goal_lower:
+                    vendor = "Acme Corp"
+                elif "innotech" in goal_lower:
+                    vendor = "InnoTech Security"
+                elif "abc" in goal_lower:
+                    vendor = "ABC Technologies"
+                else:
+                    m = re.search(r"from\s+([^,.]+)", state_summary.get("goal", ""), re.IGNORECASE)
+                    vendor = m.group(1).strip() if m else "ABC Technologies"
+
                 return {
                     "thought_summary": f"Starting task by searching for the latest invoice from {vendor}.",
                     "action": "find_latest_invoice",
