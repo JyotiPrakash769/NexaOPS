@@ -7,7 +7,7 @@ services:
     environment:
       - APP_ENV=production
       - LLM_PROVIDER=fake
-      - INVOICE_APPROVAL_THRESHOLD=10000.0
+      - INVOICE_APPROVAL_THRESHOLD=50000.0
       - MAX_AGENT_STEPS=15
     volumes:
       - ./data:/app/data
