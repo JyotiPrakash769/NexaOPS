@@ -19,5 +19,5 @@ RUN python env/seed.py
 
 EXPOSE 8000
 
-# Default command starts the web console
-CMD ["uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Default command starts the web console (supports dynamic cloud PORT)
+CMD ["sh", "-c", "uvicorn web.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
