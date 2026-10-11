@@ -18,7 +18,7 @@ The LLM proposes; deterministic code controls.
 - Pure Python code (`agent/policy.py`) enforces:
   - Allowed tools allowlist
   - Pydantic schema validation
-  - Supervisor approval gates (for invoices $\ge \$10,000$)
+  - Supervisor approval gates (for invoices $\ge ₹50,000$)
   - Mandatory independent verification before task completion (`verify_finance_record`)
   - Bounded step limits (max 15 steps)
   - Immunity to prompt injection inside invoice documents
@@ -51,7 +51,7 @@ nexaops/
 │
 ├── agent/
 │   ├── controller.py          # The core loop (Plan -> Validate -> Execute -> Observe -> Verify)
-│   ├── policy.py              # Deterministic guardrails (Allowlist, $10k approval, verification check)
+│   ├── policy.py              # Deterministic guardrails (Allowlist, ₹50k approval, verification check)
 │   ├── state.py               # TaskState model (goal, steps, working data, approvals, evidence)
 │   ├── llm.py                 # Provider adapter (Fake deterministic mock, Gemini, OpenAI)
 │   ├── prompts.py             # System prompt and dynamic step prompt builder
