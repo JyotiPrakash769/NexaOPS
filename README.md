@@ -1,9 +1,15 @@
 # NexaOps: Autonomous AI Operations Employee
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Render-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://nexaops-hctp.onrender.com/)
+[![Tests](https://img.shields.io/badge/Tests-17%2F17_Passing-success?style=for-the-badge&logo=pytest)](https://github.com/JyotiPrakash769/NexaOPS)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue?style=for-the-badge&logo=python)](https://python.org)
+
+> 🚀 **Live Interactive Web Console:** **[https://nexaops-hctp.onrender.com/](https://nexaops-hctp.onrender.com/)**
+>
 > **Take-Home Project for CentrAlign AI (Founding Engineer Assignment)**  
 > An autonomous AI Operations worker that receives business objectives in natural language, selects real tools, executes actions against a controlled company environment, observes results, adapts to failures, requests human approval when required, independently verifies outcomes, and returns verifiable evidence.
 >
-> 📖 **[Comprehensive Master Project & Demonstration Guide](file:///C:/Users/jyoti/.gemini/antigravity-ide/scratch/nexaops/MASTER_PROJECT_GUIDE.md)**: Full breakdown of objectives, company rules alignment, usage, live interview demo pitch, and Q&A answers.
+> 📖 **[Comprehensive Master Project & Demonstration Guide](MASTER_PROJECT_GUIDE.md)**: Full breakdown of objectives, company rules alignment, usage, live interview demo pitch, and Q&A answers.
 
 ---
 
@@ -169,9 +175,12 @@ tests/test_agent.py::test_generalization_list_invoices PASSED
 
 ---
 
-## 7. Optional: Single-Page Web Viewer
+## 7. Interactive Web Console (Live & Local)
 
-To inspect past tasks, recorded invoices, and audit event logs in a visual browser dashboard:
+You can try the live console directly in your browser:
+👉 **[https://nexaops-hctp.onrender.com/](https://nexaops-hctp.onrender.com/)**
+
+Or run it locally to inspect past tasks, recorded invoices, and audit event logs in a visual dashboard:
 ```bash
 python -m web.app
 ```
