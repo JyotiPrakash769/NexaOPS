@@ -100,6 +100,16 @@ class FakeLLMAdapter:
                         found_file_in_recent = m.group(1)
 
             if not found_file_in_recent:
+                # Check if a specific PDF file was directly referenced in the goal
+                direct_file_match = re.search(r"\b([A-Za-z0-9_\-]+\.pdf)\b", goal, re.IGNORECASE)
+                if direct_file_match:
+                    target_file = direct_file_match.group(1)
+                    return {
+                        "thought_summary": f"Direct invoice PDF '{target_file}' specified in goal. Extracting invoice data.",
+                        "action": "extract_invoice_data",
+                        "args": {"file": target_file}
+                    }
+
                 # Infer vendor from goal (known presets or arbitrary custom vendor)
                 goal_lower = goal.lower()
                 if "delta" in goal_lower:
@@ -113,7 +123,7 @@ class FakeLLMAdapter:
                 elif "abc" in goal_lower:
                     vendor = "ABC Technologies"
                 else:
-                    m = re.search(r"from\s+([^,.]+)", state_summary.get("goal", ""), re.IGNORECASE)
+                    m = re.search(r"(?:from|for|vendor)\s+([A-Za-z0-9_\-\s]+?)(?:\s+invoice|\.pdf|\s+receipt|$)", state_summary.get("goal", ""), re.IGNORECASE)
                     vendor = m.group(1).strip() if m else "ABC Technologies"
 
                 return {

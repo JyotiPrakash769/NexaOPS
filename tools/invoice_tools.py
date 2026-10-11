@@ -80,17 +80,27 @@ def find_latest_invoice(vendor: str) -> Dict[str, Any]:
             text = "".join([page.extract_text() or "" for page in reader.pages])
 
             # Extract vendor
-            vendor_match = re.search(r"Vendor:\s*([^\n\r]+)", text)
+            vendor_match = re.search(r"(?:Vendor|Merchant|Billed By|Company|Store|Seller|From):\s*([^\n\r]+)", text, re.IGNORECASE)
             file_vendor = vendor_match.group(1).strip() if vendor_match else ""
 
-            # Check if matching vendor
-            if vendor_normalized in file_vendor.lower():
+            # Check if matching vendor (in text or filename)
+            is_match = False
+            if file_vendor and vendor_normalized in file_vendor.lower():
+                is_match = True
+            elif vendor_normalized in file_path.stem.lower():
+                is_match = True
+                if not file_vendor:
+                    file_vendor = vendor.title()
+
+            if is_match:
                 # Extract invoice date
-                date_match = re.search(r"Invoice Date:\s*(\d{4}-\d{2}-\d{2})", text)
+                date_match = re.search(r"(?:Invoice\s*Date|Date|Dated|Bill\s*Date):\s*(\d{4}-\d{2}-\d{2})", text, re.IGNORECASE)
+                if not date_match:
+                    date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
                 inv_date = date_match.group(1) if date_match else "1970-01-01"
 
                 # Extract invoice number
-                num_match = re.search(r"Invoice Number:\s*([A-Za-z0-9\-]+)", text)
+                num_match = re.search(r"(?:Invoice\s*(?:Number|No\.?|#)|Receipt\s*(?:Number|No\.?|#)|Bill\s*(?:No\.?|#)):\s*([A-Za-z0-9\-]+)", text, re.IGNORECASE)
                 inv_num = num_match.group(1) if num_match else file_path.stem
 
                 matching_invoices.append({
@@ -165,28 +175,37 @@ def extract_invoice_data(file: str) -> Dict[str, Any]:
         text = "\n".join([page.extract_text() or "" for page in reader.pages])
 
         # Vendor Name
-        vendor_match = re.search(r"Vendor:\s*([^\n\r]+)", text)
+        vendor_match = re.search(r"(?:Vendor|Merchant|Billed By|Company|Store|Seller|From):\s*([^\n\r]+)", text, re.IGNORECASE)
         vendor_name = vendor_match.group(1).strip() if vendor_match else None
+        if not vendor_name and ("_" in file_path.stem or "-" in file_path.stem):
+            cand = file_path.stem.split("_")[0].split("-")[0].strip()
+            if len(cand) > 2 and not cand.upper().startswith("INV") and not cand.upper().startswith("REC"):
+                vendor_name = cand.title()
 
         # Invoice Number
-        num_match = re.search(r"Invoice Number:\s*([A-Za-z0-9\-]+)", text)
+        num_match = re.search(r"(?:Invoice\s*(?:Number|No\.?|#)|Receipt\s*(?:Number|No\.?|#)|Bill\s*(?:No\.?|#)):\s*([A-Za-z0-9\-]+)", text, re.IGNORECASE)
         invoice_number = num_match.group(1).strip() if num_match else None
+        if not invoice_number:
+            invoice_number = file_path.stem
 
         # Invoice Date
-        inv_date_match = re.search(r"Invoice Date:\s*(\d{4}-\d{2}-\d{2})", text)
+        inv_date_match = re.search(r"(?:Invoice\s*Date|Date|Dated|Bill\s*Date):\s*(\d{4}-\d{2}-\d{2})", text, re.IGNORECASE)
+        if not inv_date_match:
+            inv_date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
         invoice_date = inv_date_match.group(1).strip() if inv_date_match else None
 
         # Due Date
-        due_date_match = re.search(r"Due Date:\s*(\d{4}-\d{2}-\d{2})", text)
+        due_date_match = re.search(r"(?:Due\s*Date|Payment\s*Due):\s*(\d{4}-\d{2}-\d{2})", text, re.IGNORECASE)
         due_date = due_date_match.group(1).strip() if due_date_match else None
 
         # Currency
-        curr_match = re.search(r"Currency:\s*([A-Za-z₹]{3,4})", text)
-        currency = curr_match.group(1).strip() if curr_match else "INR"
+        curr_match = re.search(r"Currency:\s*([A-Za-z₹]{3,4})", text, re.IGNORECASE)
+        if not curr_match:
+            curr_match = re.search(r"\b(INR|USD|EUR|GBP)\b", text, re.IGNORECASE)
+        currency = curr_match.group(1).strip().upper() if curr_match else "INR"
 
         # Total Amount
-        # Look for "Total Amount:\s*(?:(?:INR|USD|Rs\.?|₹)\s*)?([\d,]+(?:\.\d{2})?)"
-        amount_match = re.search(r"Total Amount:\s*(?:(?:INR|USD|Rs\.?|₹)\s*)?([\d,]+(?:\.\d{2})?)", text)
+        amount_match = re.search(r"(?:Total\s*Amount|Grand\s*Total|Total|Net\s*Amount|Amount\s*Due|Total\s*Paid):\s*(?:(?:INR|USD|EUR|GBP|Rs\.?|₹|\$)\s*)?([\d,]+(?:\.\d{2})?)", text, re.IGNORECASE)
         total_amount = None
         if amount_match:
             try:

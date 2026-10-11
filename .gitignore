@@ -13,6 +13,15 @@ __pycache__/
 *.db
 *.sqlite3
 
+# Custom uploaded invoices / user test files (privacy protection)
+data/invoices/*
+!data/invoices/INV-ABC-001.pdf
+!data/invoices/INV-ABC-002.pdf
+!data/invoices/INV-ACME-404.pdf
+!data/invoices/INV-DELTA-901.pdf
+!data/invoices/INV-INJ-666.pdf
+!data/invoices/INV-XYZ-102.pdf
+
 # OS generated
 Thumbs.db
 Desktop.ini

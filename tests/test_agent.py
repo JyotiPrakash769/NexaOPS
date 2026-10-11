@@ -347,3 +347,102 @@ def test_extract_invoice_without_pdf_extension(setup_test_environment):
     assert res["ok"] is True
     assert res["data"]["invoice_number"] == "INV-ABC-002"
     assert res["data"]["total_amount"] == 48500.0
+
+
+# ==============================================================================
+# TEST 16: Upload Custom PDF Invoice & Full Agent Execution
+# ==============================================================================
+def test_upload_custom_pdf_and_agent_process(setup_test_environment, tmp_path):
+    """Verifies that an uploaded custom PDF invoice is stored, parsed, and processed end-to-end by the agent."""
+    import base64
+    from web.app import upload_invoice_file, UploadInvoiceRequest
+    from env.seed import create_invoice_pdf
+
+    # Create a custom PDF invoice
+    test_pdf_name = "SWIGGY_EXPENSE_001.pdf"
+    custom_pdf_path = tmp_path / test_pdf_name
+    from reportlab.pdfgen import canvas
+    c = canvas.Canvas(str(custom_pdf_path))
+    c.drawString(50, 750, "Vendor: Swiggy Operations")
+    c.drawString(50, 730, "Invoice Number: INV-SWIGGY-889")
+    c.drawString(50, 710, "Invoice Date: 2026-10-11")
+    c.drawString(50, 690, "Due Date: 2026-11-11")
+    c.drawString(50, 670, "Currency: INR")
+    c.drawString(50, 650, "Total Amount: INR 4,250.00")
+    c.save()
+
+    pdf_bytes = custom_pdf_path.read_bytes()
+    b64_data = base64.b64encode(pdf_bytes).decode("utf-8")
+
+    # Upload via endpoint
+    upload_res = upload_invoice_file(UploadInvoiceRequest(
+        filename=test_pdf_name,
+        content_base64=b64_data,
+        vendor="Swiggy Operations",
+        invoice_number="INV-SWIGGY-889",
+        total_amount=4250.0,
+        due_date="2026-11-11"
+    ))
+
+    assert upload_res["status"] == "ok"
+    assert upload_res["filename"] == test_pdf_name
+    assert upload_res["extracted"]["vendor_name"] == "Swiggy Operations"
+    assert upload_res["extracted"]["total_amount"] == 4250.0
+
+    # Execute agent on the uploaded invoice
+    state = run_task(
+        goal="Process the latest invoice from Swiggy Operations",
+        verbose=False
+    )
+
+    assert state.status == "COMPLETED"
+    assert state.evidence is not None
+    assert state.evidence["verified"] is True
+    assert state.evidence["invoice_number"] == "INV-SWIGGY-889"
+    assert state.evidence["amount"] == 4250.0
+
+
+# ==============================================================================
+# TEST 17: Upload Image Receipt, Convert to PDF, and Process End-to-End
+# ==============================================================================
+def test_upload_image_receipt_and_agent_process(setup_test_environment, tmp_path):
+    """Verifies that an uploaded image receipt (PNG/JPG) is converted to a PDF and processed by the agent."""
+    import base64
+    import io
+    from PIL import Image
+    from web.app import upload_invoice_file, UploadInvoiceRequest
+
+    # Generate a dummy receipt image
+    img = Image.new("RGB", (300, 400), color=(240, 240, 240))
+    img_buf = io.BytesIO()
+    img.save(img_buf, format="PNG")
+    img_bytes = img_buf.getvalue()
+    b64_img = base64.b64encode(img_bytes).decode("utf-8")
+
+    upload_res = upload_invoice_file(UploadInvoiceRequest(
+        filename="Uber_Cab_Receipt.png",
+        content_base64=b64_img,
+        vendor="Uber Technologies",
+        invoice_number="REC-UBER-550",
+        total_amount=850.0,
+        invoice_date="2026-10-11",
+        due_date="2026-10-11",
+        currency="INR"
+    ))
+
+    assert upload_res["status"] == "ok"
+    assert upload_res["filename"] == "Uber_Cab_Receipt.pdf"
+    assert upload_res["vendor"] == "Uber Technologies"
+    assert upload_res["amount"] == 850.0
+
+    # Ensure agent processes the uploaded receipt seamlessly
+    state = run_task(
+        goal="Process the latest invoice from Uber Technologies",
+        verbose=False
+    )
+
+    assert state.status == "COMPLETED"
+    assert state.evidence is not None
+    assert state.evidence["verified"] is True
+    assert state.evidence["invoice_number"] == "REC-UBER-550"
+    assert state.evidence["amount"] == 850.0

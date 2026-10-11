@@ -33,8 +33,8 @@ The LLM proposes; deterministic code controls.
 - **PDF Extraction**: `pypdf` for extracting text streams from invoices
 - **PDF Generation**: `reportlab` for generating reproducible test invoices
 - **AI Providers**: Pluggable adapter in `agent/llm.py` supporting `fake` (offline deterministic), `gemini` (Gemini 2.5 Flash), and `openai` (GPT-4o Mini)
-- **Testing**: `pytest` (12/12 passing deterministic offline tests)
-- **Optional Web Viewer**: `fastapi` + `uvicorn` single-page dashboard
+- **Testing**: `pytest` (17/17 passing deterministic offline tests)
+- **Optional Web Viewer**: `fastapi` + `uvicorn` single-page dashboard with PDF preview & receipt upload
 
 *No LangChain, no vector databases, no Docker required for local execution, no React bloat.*
 
@@ -131,11 +131,21 @@ python main.py "List all invoices from ABC Technologies"
 ```
 * **What happens**: Without changing a single line in `agent/controller.py`, the agent adapts to an entirely different business request and calls `list_invoices`.
 
+### Scenario G: Upload Custom Receipts & PDF Invoices (Web Console)
+1. Start the web console:
+```bash
+python -m web.app
+```
+2. Open **`http://localhost:8000`** in your browser.
+3. Click the **"📤 Upload Receipt / PDF"** button (in Task Controller or Vault tab).
+4. Drag & drop or select **any PDF invoice or receipt image** (PNG, JPG, JPEG, WEBP).
+5. The system automatically inspects the file, converts receipt images into standardized PDFs with metadata banners, catalogs them in `data/invoices/`, and offers an instant **"⚡ Upload & Dispatch Agent"** one-click workflow!
+
 ---
 
 ## 6. Running the Test Suite
 
-Run all 12 deterministic test scenarios offline without an API key:
+Run all 17 deterministic test scenarios offline without an API key:
 ```bash
 pytest tests/ -v
 ```

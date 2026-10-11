@@ -13,6 +13,9 @@ Includes:
 import os
 import sys
 import json
+import base64
+import re
+import io
 import queue
 import threading
 import time
@@ -60,6 +63,18 @@ class GenerateInvoiceRequest(BaseModel):
     total_amount: float
     invoice_date: Optional[str] = "2026-10-10"
     due_date: Optional[str] = "2026-11-10"
+    currency: Optional[str] = "INR"
+    notes: Optional[str] = ""
+
+
+class UploadInvoiceRequest(BaseModel):
+    filename: str
+    content_base64: str
+    vendor: Optional[str] = None
+    invoice_number: Optional[str] = None
+    total_amount: Optional[float] = None
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
     currency: Optional[str] = "INR"
     notes: Optional[str] = ""
 
@@ -173,6 +188,149 @@ def generate_custom_invoice(req: GenerateInvoiceRequest):
         "vendor": req.vendor_name.strip(),
         "amount": req.total_amount,
         "message": f"Successfully created {filename} for {req.vendor_name.strip()}."
+    }
+
+
+def convert_image_receipt_to_pdf(
+    image_bytes: bytes,
+    out_pdf_path: Path,
+    vendor: str,
+    invoice_number: str,
+    total_amount: Optional[float] = None,
+    invoice_date: Optional[str] = None,
+    due_date: Optional[str] = None,
+    currency: str = "INR"
+) -> Path:
+    from PIL import Image
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    import tempfile
+
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_img_path = tmp.name
+        img.save(tmp_img_path, format="PNG")
+
+    try:
+        width, height = letter
+        c = canvas.Canvas(str(out_pdf_path), pagesize=letter)
+
+        # Receipt / Invoice Header
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(50, height - 45, "COMMERCIAL EXPENSE RECEIPT")
+        c.setLineWidth(1)
+        c.line(50, height - 52, width - 50, height - 52)
+
+        # Metadata block (parsed cleanly by pypdf and invoice_tools)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, height - 72, f"Vendor: {vendor}")
+        c.drawString(330, height - 72, f"Invoice Number: {invoice_number}")
+
+        c.setFont("Helvetica", 10)
+        inv_dt = invoice_date or time.strftime("%Y-%m-%d")
+        due_dt = due_date or inv_dt
+        c.drawString(50, height - 88, f"Invoice Date: {inv_dt}")
+        c.drawString(330, height - 88, f"Due Date: {due_dt}")
+
+        amt_str = f"{currency} {total_amount:,.2f}" if total_amount is not None else f"{currency} 0.00"
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, height - 104, f"Currency: {currency}")
+        c.drawString(330, height - 104, f"Total Amount: {amt_str}")
+        c.line(50, height - 112, width - 50, height - 112)
+
+        # Draw uploaded receipt image with proportional scaling
+        img_w, img_h = img.size
+        max_box_w, max_box_h = 500, height - 140
+        scale = min(max_box_w / img_w, max_box_h / img_h)
+        draw_w = img_w * scale
+        draw_h = img_h * scale
+        draw_x = 50 + (max_box_w - draw_w) / 2
+        draw_y = (height - 125) - draw_h
+
+        c.drawImage(tmp_img_path, draw_x, draw_y, width=draw_w, height=draw_h)
+        c.save()
+    finally:
+        try:
+            os.remove(tmp_img_path)
+        except Exception:
+            pass
+
+    return out_pdf_path
+
+
+@app.post("/api/invoices/upload")
+def upload_invoice_file(req: UploadInvoiceRequest):
+    if not INVOICES_DIR.exists():
+        INVOICES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Decode base64
+    raw_b64 = req.content_base64
+    if "," in raw_b64:
+        raw_b64 = raw_b64.split(",", 1)[1]
+    try:
+        file_bytes = base64.b64decode(raw_b64)
+    except Exception as e:
+        return {"status": "error", "message": f"Invalid base64 payload: {str(e)}"}
+
+    orig_name = Path(req.filename).name
+    ext = Path(orig_name).suffix.lower()
+    clean_stem = re.sub(r'[^a-zA-Z0-9_\-]', '_', Path(orig_name).stem).strip('_')
+    if not clean_stem:
+        clean_stem = f"RECEIPT_{int(time.time())}"
+
+    # Determine vendor and invoice number fallback
+    vendor = (req.vendor or "").strip() or clean_stem.replace("_", " ").title()
+    inv_num = (req.invoice_number or "").strip().upper() or f"REC-{clean_stem[:8].upper()}-{int(time.time())%1000:03d}"
+
+    target_pdf_name = f"{clean_stem}.pdf"
+    target_path = INVOICES_DIR / target_pdf_name
+
+    # 2. Process according to file type
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+    if ext in image_exts:
+        # Convert image receipt to PDF with embedded metadata banner
+        try:
+            convert_image_receipt_to_pdf(
+                image_bytes=file_bytes,
+                out_pdf_path=target_path,
+                vendor=vendor,
+                invoice_number=inv_num,
+                total_amount=req.total_amount,
+                invoice_date=req.invoice_date,
+                due_date=req.due_date,
+                currency=req.currency or "INR"
+            )
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to convert receipt image: {str(e)}"}
+    else:
+        # Standard PDF
+        target_path.write_bytes(file_bytes)
+
+    # 3. Extract and verify data using invoice_tools
+    extracted_res = invoice_tools.extract_invoice_data(target_pdf_name)
+    extracted_data = extracted_res.get("data") or {}
+
+    # If user provided metadata hints and extraction missed them, augment extracted_data
+    if req.vendor and not extracted_data.get("vendor_name"):
+        extracted_data["vendor_name"] = req.vendor
+    if req.total_amount is not None and not extracted_data.get("total_amount"):
+        extracted_data["total_amount"] = req.total_amount
+    if req.due_date and not extracted_data.get("due_date"):
+        extracted_data["due_date"] = req.due_date
+
+    return {
+        "status": "ok",
+        "filename": target_pdf_name,
+        "size_kb": round(target_path.stat().st_size / 1024, 1),
+        "vendor": extracted_data.get("vendor_name") or vendor,
+        "invoice_number": extracted_data.get("invoice_number") or inv_num,
+        "amount": extracted_data.get("total_amount") or req.total_amount,
+        "due_date": extracted_data.get("due_date"),
+        "extracted": extracted_data,
+        "message": f"Successfully uploaded and cataloged '{target_pdf_name}' in Vault."
     }
 
 
@@ -390,7 +548,7 @@ def stream_task(
 # ------------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def index_view():
-    return """<!DOCTYPE html>
+    return r"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -662,8 +820,11 @@ def index_view():
           <span style="font-size:0.75rem; color:var(--text-dim);" id="stepCounter">0 Steps</span>
         </div>
 
-        <div style="font-size:0.75rem; color:var(--text-dim); margin-bottom:8px;">Presets:</div>
+        <div style="font-size:0.75rem; color:var(--text-dim); margin-bottom:8px;">Presets & Actions:</div>
         <div class="presets">
+          <button class="chip" style="border-color:var(--primary); color:var(--primary); background:rgba(56, 189, 248, 0.12);" onclick="openUploadModal()">
+            <span>📤</span> Upload Receipt / PDF
+          </button>
           <button class="chip" onclick="setGoal('Process the latest invoice from ABC Technologies')">
             <span>✨</span> Happy Path (ABC)
           </button>
@@ -791,7 +952,8 @@ def index_view():
       <div class="panel-header">
         <div class="panel-title">Sample Invoice PDF Vault</div>
         <div style="display:flex; gap:8px;">
-          <button class="btn-primary" onclick="openCreateInvoiceModal()">➕ Create Custom Invoice</button>
+          <button class="btn-primary" onclick="openUploadModal()">📤 Upload Receipt / PDF</button>
+          <button class="btn-secondary" onclick="openCreateInvoiceModal()">➕ Custom Form</button>
           <button class="btn-secondary" onclick="loadPdfVault()">🔄 Refresh</button>
         </div>
       </div>
@@ -874,6 +1036,82 @@ def index_view():
         <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:8px;">
           <button class="btn-secondary" onclick="closeCreateInvoiceModal()">Cancel</button>
           <button class="btn-primary" onclick="submitCreateInvoice()">Generate Invoice PDF</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload Receipt / PDF Modal -->
+  <div class="modal-overlay" id="uploadModal">
+    <div class="modal-box" style="max-width:580px; height:auto; padding:24px;">
+      <div class="modal-header" style="padding:0 0 16px 0;">
+        <span style="font-weight:800; font-size:1.15rem; color:var(--text); display:flex; align-items:center; gap:8px;">
+          📤 Upload Custom Receipt or Invoice PDF
+        </span>
+        <button class="btn-secondary" style="padding:4px 10px;" onclick="closeUploadModal()">✕</button>
+      </div>
+
+      <!-- Drag & Drop Zone -->
+      <div id="dropZone" style="border: 2px dashed rgba(56, 189, 248, 0.4); border-radius: 12px; background: rgba(56, 189, 248, 0.03); padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s ease; margin-top: 8px;" onclick="document.getElementById('receiptFileInput').click()">
+        <input type="file" id="receiptFileInput" accept=".pdf,image/png,image/jpeg,image/jpg,image/webp" style="display:none;" onchange="handleFileSelected(event)">
+        <div style="font-size: 2.2rem; margin-bottom: 8px;">📄</div>
+        <div style="font-weight: 700; font-size: 0.95rem; color: var(--text);" id="dropZonePrompt">
+          Click to Browse or Drag & Drop File Here
+        </div>
+        <div style="font-size: 0.76rem; color: var(--text-dim); margin-top: 4px;">
+          Supported formats: PDF invoices or Receipt images (PNG, JPG, JPEG, WEBP)
+        </div>
+      </div>
+
+      <!-- File Preview / Info Bar -->
+      <div id="uploadFileInfo" style="display:none; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.3); border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin-top:12px;">
+        <div style="display:flex; align-items:center; gap:10px; overflow:hidden;">
+          <span id="fileIconPreview" style="font-size:1.4rem;">🧾</span>
+          <div style="overflow:hidden; text-overflow:ellipsis;">
+            <div id="uploadFileName" style="font-weight:600; font-size:0.85rem; color:var(--primary); white-space:nowrap; text-overflow:ellipsis; overflow:hidden;">filename.pdf</div>
+            <div id="uploadFileSize" style="font-size:0.72rem; color:var(--text-dim);">0 KB</div>
+          </div>
+        </div>
+        <button class="btn-secondary" style="padding:2px 8px; font-size:0.7rem;" onclick="clearSelectedFile(event)">Remove</button>
+      </div>
+
+      <!-- Metadata hints (optional / auto-detected) -->
+      <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px;">
+        <div style="font-size:0.75rem; color:var(--text-muted); font-weight:600; text-transform:uppercase;">
+          Metadata / Clarification Hints (Auto-Detected or Customizable):
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div>
+            <label style="font-size:0.72rem; color:var(--text-dim); text-transform:uppercase;">Vendor Name</label>
+            <input type="text" id="upVendor" placeholder="e.g. Swiggy, Uber, Dell">
+          </div>
+          <div>
+            <label style="font-size:0.72rem; color:var(--text-dim); text-transform:uppercase;">Invoice / Receipt #</label>
+            <input type="text" id="upInvNum" placeholder="e.g. REC-2026-001">
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div>
+            <label style="font-size:0.72rem; color:var(--text-dim); text-transform:uppercase;">Total Amount (₹)</label>
+            <input type="number" id="upAmount" placeholder="e.g. 1450.00" step="0.01">
+          </div>
+          <div>
+            <label style="font-size:0.72rem; color:var(--text-dim); text-transform:uppercase;">Due Date</label>
+            <input type="text" id="upDueDate" placeholder="YYYY-MM-DD">
+          </div>
+        </div>
+      </div>
+
+      <!-- Upload Actions -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px;">
+        <button class="btn-secondary" onclick="closeUploadModal()">Cancel</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-secondary" id="saveVaultBtn" onclick="submitUploadInvoice(false)">
+            💾 Save to Vault
+          </button>
+          <button class="btn-primary" id="uploadDispatchBtn" onclick="submitUploadInvoice(true)">
+            ⚡ Upload & Dispatch Agent
+          </button>
         </div>
       </div>
     </div>
@@ -1076,6 +1314,167 @@ def index_view():
         }
       } catch (err) {
         alert('Failed to create invoice: ' + err);
+      }
+    }
+
+    let selectedUploadFile = null;
+    let selectedFileBase64 = null;
+
+    function openUploadModal() {
+      document.getElementById('uploadModal').style.display = 'flex';
+      setupDropZone();
+    }
+
+    function closeUploadModal() {
+      document.getElementById('uploadModal').style.display = 'none';
+      clearSelectedFile();
+    }
+
+    function setupDropZone() {
+      const zone = document.getElementById('dropZone');
+      if (!zone || zone.dataset.setup) return;
+      zone.dataset.setup = 'true';
+
+      ['dragenter', 'dragover'].forEach(name => {
+        zone.addEventListener(name, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          zone.style.borderColor = 'var(--primary)';
+          zone.style.background = 'rgba(56, 189, 248, 0.12)';
+        });
+      });
+
+      ['dragleave', 'drop'].forEach(name => {
+        zone.addEventListener(name, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          zone.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+          zone.style.background = 'rgba(56, 189, 248, 0.03)';
+        });
+      });
+
+      zone.addEventListener('drop', (e) => {
+        if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+          processFile(e.dataTransfer.files[0]);
+        }
+      });
+    }
+
+    function handleFileSelected(event) {
+      if (event.target.files && event.target.files.length > 0) {
+        processFile(event.target.files[0]);
+      }
+    }
+
+    function clearSelectedFile(event) {
+      if (event) event.stopPropagation();
+      selectedUploadFile = null;
+      selectedFileBase64 = null;
+      const input = document.getElementById('receiptFileInput');
+      if (input) input.value = '';
+      document.getElementById('uploadFileInfo').style.display = 'none';
+      document.getElementById('dropZone').style.display = 'block';
+      document.getElementById('upVendor').value = '';
+      document.getElementById('upInvNum').value = '';
+      document.getElementById('upAmount').value = '';
+      document.getElementById('upDueDate').value = '';
+    }
+
+    function processFile(file) {
+      selectedUploadFile = file;
+      document.getElementById('uploadFileName').innerText = file.name;
+      document.getElementById('uploadFileSize').innerText = (file.size / 1024).toFixed(1) + ' KB';
+      document.getElementById('uploadFileInfo').style.display = 'flex';
+      document.getElementById('dropZone').style.display = 'none';
+
+      const isImg = file.type.startsWith('image/');
+      document.getElementById('fileIconPreview').innerText = isImg ? '🖼️' : '📄';
+
+      // Smart auto-detection from filename
+      const stem = file.name.replace(/\\.[^/.]+$/, "");
+      const cleaned = stem.replace(/[_-]/g, ' ').trim();
+      const words = cleaned.split(' ');
+      const vendorGuess = words[0].charAt(0).toUpperCase() + words[0].slice(1);
+
+      const vendorInput = document.getElementById('upVendor');
+      if (!vendorInput.value) vendorInput.value = vendorGuess;
+
+      const numInput = document.getElementById('upInvNum');
+      if (!numInput.value) {
+        numInput.value = 'REC-' + stem.slice(0, 6).toUpperCase() + '-' + Math.floor(100 + Math.random() * 900);
+      }
+
+      const amtMatch = stem.match(/\b(\d+(?:\.\d{2})?)\b/);
+      if (amtMatch && !document.getElementById('upAmount').value) {
+        document.getElementById('upAmount').value = amtMatch[1];
+      }
+
+      if (!document.getElementById('upDueDate').value) {
+        document.getElementById('upDueDate').value = new Date().toISOString().slice(0, 10);
+      }
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        selectedFileBase64 = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function submitUploadInvoice(autoDispatch = false) {
+      if (!selectedUploadFile || !selectedFileBase64) {
+        alert('Please choose or drop a PDF or receipt image first.');
+        return;
+      }
+
+      const vendor = document.getElementById('upVendor').value.trim();
+      const invNum = document.getElementById('upInvNum').value.trim();
+      const amountVal = document.getElementById('upAmount').value.trim();
+      const amount = amountVal ? parseFloat(amountVal) : null;
+      const dueDate = document.getElementById('upDueDate').value.trim();
+
+      const btn1 = document.getElementById('saveVaultBtn');
+      const btn2 = document.getElementById('uploadDispatchBtn');
+      if (btn1) btn1.disabled = true;
+      if (btn2) btn2.disabled = true;
+
+      try {
+        const res = await fetch('/api/invoices/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: selectedUploadFile.name,
+            content_base64: selectedFileBase64,
+            vendor: vendor || undefined,
+            invoice_number: invNum || undefined,
+            total_amount: amount !== null ? amount : undefined,
+            due_date: dueDate || undefined
+          })
+        });
+
+        const data = await res.json();
+        if (data.status !== 'ok') {
+          alert('Upload failed: ' + (data.message || 'Unknown error'));
+          if (btn1) btn1.disabled = false;
+          if (btn2) btn2.disabled = false;
+          return;
+        }
+
+        closeUploadModal();
+        loadPdfVault();
+
+        if (autoDispatch) {
+          const finalVendor = data.vendor || vendor || 'ABC Technologies';
+          setGoal(`Process the latest invoice from ${finalVendor}`);
+          switchTab('console');
+          runStreamTask();
+        } else {
+          alert(`Successfully uploaded "${data.filename}" to Vault!`);
+        }
+      } catch (err) {
+        alert('Error uploading file: ' + err);
+      } finally {
+        if (btn1) btn1.disabled = false;
+        if (btn2) btn2.disabled = false;
       }
     }
 
